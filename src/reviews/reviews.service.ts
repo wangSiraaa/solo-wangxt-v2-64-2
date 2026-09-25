@@ -9,8 +9,10 @@ import { DataSource, IsNull, Repository } from 'typeorm';
 import { AssessmentCase } from '../entities/assessment-case.entity';
 import { ReviewDecision } from '../entities/review-decision.entity';
 import { NotificationRecord } from '../entities/notification.entity';
+import { GradeVersion } from '../entities/grade-version.entity';
 import {
   CaseStatus,
+  GradeVersionSource,
   NotifiableStatus,
   NotificationStatus,
   ReviewResult,
@@ -79,7 +81,7 @@ export class ReviewsService {
     }
 
     try {
-      return await this.dataSource.transaction(async (em) => {
+      await this.dataSource.transaction(async (em) => {
         assessmentCase.status = CaseStatus.CONFIRMED;
         assessmentCase.confirmedGrade = dto.confirmedGrade;
         await em.save(assessmentCase);
@@ -93,6 +95,33 @@ export class ReviewsService {
         review.idempotencyKey = dto.idempotencyKey ?? null;
         await em.save(review);
 
+        const savedReview = await em.findOneOrFail(ReviewDecision, {
+          where: { assessmentCase: { id: caseId } },
+        });
+        // 实体入栈时 review 为 null；再次保存案件前显式回填，避免双向 OneToOne
+        // 被身份映射中的 null 覆盖，导致复核意见外键丢失。
+        assessmentCase.review = savedReview;
+        const gradeVersion = await em.save(GradeVersion, {
+          assessmentCase,
+          versionNumber: 1,
+          grade: dto.confirmedGrade,
+          source: GradeVersionSource.REVIEW,
+          sourceReviewId: savedReview.id,
+          sourceAppealId: null,
+          effectiveDate: null,
+          gradePeriodId: null,
+          basisSnapshot: {
+            reviewId: savedReview.id,
+            result: ReviewResult.CONFIRMED,
+            reviewerId: dto.reviewerId,
+            comment: dto.comment,
+            decidedAt: savedReview.decidedAt,
+          },
+        });
+        assessmentCase.currentGradeVersion = gradeVersion;
+        assessmentCase.currentGradeVersionId = gradeVersion.id;
+        await em.save(assessmentCase);
+
         // 等级确认后生成告知记录（尚未送达）
         const notification = new NotificationRecord();
         notification.assessmentCase = assessmentCase;
@@ -105,16 +134,22 @@ export class ReviewsService {
           `本评估为虚构行政流程演示，不构成医疗诊断或护理建议。`;
         notification.attempts = 0;
         notification.failureReason = null;
+        notification.gradeVersion = gradeVersion;
+        notification.gradeVersionId = gradeVersion.id;
         await em.save(notification);
 
-        return {
-          replayed: false,
-          case: await em.findOne(AssessmentCase, {
-            where: { id: caseId },
-            relations: { review: true, notifications: true },
-          }),
-        };
       });
+      return {
+        replayed: false,
+        case: await this.caseRepo.findOne({
+          where: { id: caseId },
+          relations: {
+            review: true,
+            notifications: true,
+            currentGradeVersion: true,
+          },
+        }),
+      };
     } catch (e: any) {
       // 并发下幂等键唯一约束：回放已有确认
       if (e?.constraint === 'review_decisions_idempotency_key_key' || /idempotency_key/.test(String(e?.detail ?? ''))) {

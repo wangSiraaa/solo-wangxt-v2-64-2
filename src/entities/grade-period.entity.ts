@@ -2,9 +2,12 @@ import {
   Column,
   Entity,
   Index,
+  JoinColumn,
+  ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { GradeCode } from '../common/enums';
+import { GradeVersion } from './grade-version.entity';
 
 /**
  * 老人已生效等级期间（半开区间 [startDate, endDateExclusive)）。
@@ -36,6 +39,14 @@ export class GradeEffectivePeriod {
   /** 来源评估案件 */
   @Column({ name: 'source_case_id', type: 'uuid' })
   sourceCaseId: string;
+
+  /** 原确认或申诉变更等级版本；历史数据由迁移回填为案件 v1 */
+  @ManyToOne(() => GradeVersion, { nullable: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'grade_version_id' })
+  gradeVersion: GradeVersion | null;
+
+  @Column({ name: 'grade_version_id', type: 'uuid', nullable: true })
+  gradeVersionId: string | null;
 
   @Column({ name: 'created_at', type: 'timestamptz', default: () => 'now()' })
   createdAt: Date;

@@ -81,7 +81,9 @@ describe('养老评估-复核-告知-费用 全流程 (e2e)', () => {
     const ds = app.get(DataSource);
     await ds.query(`
       TRUNCATE grade_periods, notification_records, review_decisions,
-               assessor_answers, assessment_cases RESTART IDENTITY CASCADE
+               assessor_answers, assessment_cases, grade_versions,
+               appeals, appeal_events, appeal_materials
+      RESTART IDENTITY CASCADE
     `);
   }, 120_000);
 

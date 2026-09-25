@@ -14,6 +14,8 @@ import { ScaleVersion } from './scale-version.entity';
 import { AssessorAnswer } from './assessor-answer.entity';
 import { ReviewDecision } from './review-decision.entity';
 import { NotificationRecord } from './notification.entity';
+import { GradeVersion } from './grade-version.entity';
+import { Appeal } from './appeal.entity';
 
 /** 一次评估案件：同一位老人可多次评估，每次独立成案 */
 @Entity('assessment_cases')
@@ -90,6 +92,20 @@ export class AssessmentCase {
   @OneToOne(() => ReviewDecision, (r) => r.assessmentCase)
   review: ReviewDecision;
 
+  /** 当前有效等级版本；申诉变更时追加版本并切换指向 */
+  @ManyToOne(() => GradeVersion, { nullable: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'current_grade_version_id' })
+  currentGradeVersion: GradeVersion | null;
+
+  @Column({ name: 'current_grade_version_id', type: 'uuid', nullable: true })
+  currentGradeVersionId: string | null;
+
   @OneToMany(() => NotificationRecord, (n) => n.assessmentCase)
   notifications: NotificationRecord[];
+
+  @OneToMany(() => GradeVersion, (g) => g.assessmentCase)
+  gradeVersions: GradeVersion[];
+
+  @OneToMany(() => Appeal, (a) => a.assessmentCase)
+  appeals: Appeal[];
 }

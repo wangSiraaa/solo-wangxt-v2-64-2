@@ -12,8 +12,10 @@ import { ScaleItem } from '../entities/scale-item.entity';
 import { ScaleOption } from '../entities/scale-option.entity';
 import { ReviewDecision } from '../entities/review-decision.entity';
 import { NotificationRecord } from '../entities/notification.entity';
+import { GradeVersion } from '../entities/grade-version.entity';
 import {
   CaseStatus,
+  GradeVersionSource,
   NotifiableStatus,
   NotificationStatus,
   ReviewResult,
@@ -171,6 +173,32 @@ export class AssessmentsService {
           review.assessmentCase = saved;
           notification.assessmentCase = saved;
           await em.save(review);
+          const savedReview = await em.findOneOrFail(ReviewDecision, {
+            where: { assessmentCase: { id: saved.id } },
+          });
+          saved.review = savedReview;
+          const gradeVersion = await em.save(GradeVersion, {
+            assessmentCase: saved,
+            versionNumber: 1,
+            grade: r1.grade!,
+            source: GradeVersionSource.REVIEW,
+            sourceReviewId: savedReview.id,
+            sourceAppealId: null,
+            effectiveDate: null,
+            gradePeriodId: null,
+            basisSnapshot: {
+              reviewId: savedReview.id,
+              result: ReviewResult.AGREEMENT,
+              reviewerId: 'SYSTEM',
+              comment: savedReview.comment,
+              decidedAt: savedReview.decidedAt,
+            },
+          });
+          saved.currentGradeVersion = gradeVersion;
+          saved.currentGradeVersionId = gradeVersion.id;
+          await em.save(saved);
+          notification.gradeVersion = gradeVersion;
+          notification.gradeVersionId = gradeVersion.id;
           await em.save(notification);
           return saved.id;
         }
@@ -190,11 +218,14 @@ export class AssessmentsService {
         scaleVersion: true,
         answers: true,
         review: true,
-        notifications: true,
+        notifications: { gradeVersion: true },
+        currentGradeVersion: true,
+        gradeVersions: true,
       },
       order: {
         notifications: { createdAt: 'ASC' },
         answers: { assessorId: 'ASC', itemCode: 'ASC' },
+        gradeVersions: { versionNumber: 'ASC' },
       },
     });
     if (!c) throw new NotFoundException('评估案件不存在');

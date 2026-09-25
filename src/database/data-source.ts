@@ -8,7 +8,12 @@ import { ReviewDecision } from '../entities/review-decision.entity';
 import { NotificationRecord } from '../entities/notification.entity';
 import { GradeEffectivePeriod } from '../entities/grade-period.entity';
 import { FeeRateVersion } from '../entities/fee-rate-version.entity';
+import { GradeVersion } from '../entities/grade-version.entity';
+import { Appeal } from '../entities/appeal.entity';
+import { AppealEvent } from '../entities/appeal-event.entity';
+import { AppealMaterial } from '../entities/appeal-material.entity';
 import { seedDemoData } from './seed';
+import { runMigrations } from './migrations';
 
 export const entities = [
   ScaleVersion,
@@ -20,6 +25,10 @@ export const entities = [
   NotificationRecord,
   GradeEffectivePeriod,
   FeeRateVersion,
+  GradeVersion,
+  Appeal,
+  AppealEvent,
+  AppealMaterial,
 ];
 
 export function buildDataSourceOptions(): DataSourceOptions {
@@ -42,13 +51,12 @@ export function buildDataSourceOptions(): DataSourceOptions {
  */
 export async function ensureSchema(dataSource: DataSource): Promise<void> {
   await dataSource.query('CREATE EXTENSION IF NOT EXISTS btree_gist');
+  await dataSource.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
 
-  const exists = await dataSource.query(
-    `SELECT to_regclass('grade_periods') IS NOT NULL AS ok`,
-  );
-  if (!exists[0].ok) {
-    await dataSource.synchronize();
-  }
+  // 当前演示项目以实体元数据补齐新库/既有库表结构；migrations 中的显式 SQL
+  // 再固化关键 CHECK、部分唯一索引、外键与历史数据回填。
+  await dataSource.synchronize();
+  await runMigrations(dataSource);
 
   const constraint = await dataSource.query(
     `SELECT 1 FROM pg_constraint WHERE conname = 'grade_periods_no_overlap'`,

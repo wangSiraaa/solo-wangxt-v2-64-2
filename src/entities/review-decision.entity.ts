@@ -4,11 +4,13 @@ import {
   Entity,
   Index,
   JoinColumn,
+  OneToMany,
   OneToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { GradeCode, ReviewResult } from '../common/enums';
 import { AssessmentCase } from './assessment-case.entity';
+import { GradeVersion } from './grade-version.entity';
 
 /** 管理复核意见：冲突案件必须人工复核，不得简单取较高等级 */
 @Entity('review_decisions')
@@ -45,4 +47,7 @@ export class ReviewDecision {
 
   @CreateDateColumn({ name: 'decided_at' })
   decidedAt: Date;
+
+  @OneToMany(() => GradeVersion, (g) => g.sourceReview)
+  gradeVersions: GradeVersion[];
 }

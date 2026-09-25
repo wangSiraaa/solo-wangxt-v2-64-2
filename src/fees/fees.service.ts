@@ -17,6 +17,7 @@ import {
   isValidDate,
 } from '../common/date.util';
 import { dailyTimesRate, moneyText } from '../common/money.util';
+import { GradePeriodService } from './grade-period.service';
 
 export interface FeeSegment {
   startDate: string;
@@ -43,6 +44,7 @@ export class FeesService {
     private readonly periodRepo: Repository<GradeEffectivePeriod>,
     @InjectRepository(FeeRateVersion)
     private readonly rateRepo: Repository<FeeRateVersion>,
+    private readonly gradePeriodService: GradePeriodService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -66,24 +68,27 @@ export class FeesService {
       });
     }
 
-    const assessmentCase = await this.caseRepo.findOne({ where: { id: caseId } });
+    const assessmentCase = await this.caseRepo.findOne({
+      where: { id: caseId },
+      relations: { currentGradeVersion: true },
+    });
     if (!assessmentCase) throw new NotFoundException('评估案件不存在');
-    if (!assessmentCase.confirmedGrade) {
+    if (!assessmentCase.confirmedGrade || !assessmentCase.currentGradeVersionId) {
       throw new ConflictException({
         code: 'GRADE_NOT_CONFIRMED',
         message: '等级尚未确认，不得生效费用',
       });
     }
     const grade = assessmentCase.confirmedGrade;
+    const gradeVersionId = assessmentCase.currentGradeVersionId;
 
     return this.dataSource.transaction(async (em) => {
-      // 行锁锁定该老人全部期间，避免并发生效造成同日重叠
-      // 注意：原生查询的 date 列会返回 JS Date，统一转文本再比较
+      // 行锁锁定该老人全部期间；GradePeriodService 封装重叠切分和唯一约束兜底。
       const periods = await em.query(
         `SELECT id, grade,
                 start_date::text AS start_date,
                 end_date_exclusive::text AS end_date_exclusive,
-                source_case_id
+                source_case_id, grade_version_id
            FROM grade_periods WHERE elder_id = $1
            ORDER BY start_date FOR UPDATE`,
         [assessmentCase.elderId],
@@ -106,72 +111,21 @@ export class FeesService {
         };
       }
 
-      // 半开区间重叠：new=[d, ∞)
-      for (const p of periods as any[]) {
-        const pEnd = p.end_date_exclusive ?? '9999-12-31';
-        const overlaps = effectiveDate < pEnd; // new 结束为 ∞，故只需判断 d < p.end
-        if (!overlaps) continue;
+      const period = await this.gradePeriodService.applyVersion(em, {
+        elderId: assessmentCase.elderId,
+        caseId,
+        gradeVersionId,
+        grade,
+        effectiveDate,
+      });
 
-        if (p.start_date === effectiveDate) {
-          // 同一天已有生效等级
-          if (p.grade === grade) {
-            return {
-              replayed: true,
-              message: '同一天相同等级已存在，按重复请求回放',
-              period: await em.findOne(GradeEffectivePeriod, {
-                where: { id: p.id },
-              }),
-            };
-          }
-          throw new ConflictException({
-            code: 'GRADE_PERIOD_OVERLAP_SAME_DAY',
-            message: `生效日 ${effectiveDate} 已存在等级 ${p.grade}，同日不得重叠生效 ${grade}`,
-            existingPeriodId: p.id,
-          });
-        }
-
-        if (p.start_date < effectiveDate) {
-          // 生效日落入已有区间内部（仅可能是开放区间或尚未结束的区间）
-          if (p.grade === grade) {
-            throw new ConflictException({
-              code: 'GRADE_ALREADY_EFFECTIVE',
-              message: `等级 ${grade} 已自 ${p.start_date} 起生效，同等级无需重复生效（日费调价由费用规则分段处理）`,
-              existingPeriodId: p.id,
-            });
-          }
-          // 月中升级/换级：旧区间截至生效日前一日
-          await em.query(
-            `UPDATE grade_periods SET end_date_exclusive = $1 WHERE id = $2`,
-            [effectiveDate, p.id],
-          );
-        } else {
-          // 回溯日期撞到未来区间
-          throw new ConflictException({
-            code: 'BACKDATED_OVERLAP',
-            message: `生效日 ${effectiveDate} 早于已有未来生效区间（${p.start_date} 起 ${p.grade}），不得回溯重叠`,
-            existingPeriodId: p.id,
-          });
-        }
+      // 原确认等级期间回填到 v1；申诉变更版本在裁决事务内同样回填。
+      const currentVersion = assessmentCase.currentGradeVersion;
+      if (currentVersion && !currentVersion.gradePeriodId) {
+        currentVersion.gradePeriodId = period.id;
+        await em.save(currentVersion);
       }
-
-      try {
-        const created = await em.save(GradeEffectivePeriod, {
-          elderId: assessmentCase.elderId,
-          grade,
-          startDate: effectiveDate,
-          endDateExclusive: null,
-          sourceCaseId: caseId,
-        });
-        return { replayed: false, period: created };
-      } catch (e: any) {
-        if (e?.constraint === 'grade_periods_no_overlap') {
-          throw new ConflictException({
-            code: 'GRADE_PERIOD_OVERLAP_SAME_DAY',
-            message: '同一天存在重叠生效等级（数据库排他约束拦截）',
-          });
-        }
-        throw e;
-      }
+      return { replayed: false, period };
     });
   }
 

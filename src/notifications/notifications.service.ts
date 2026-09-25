@@ -30,7 +30,7 @@ export class NotificationsService {
   async attempt(caseId: string, dto: NotifyAttemptDto): Promise<NotificationRecord> {
     const assessmentCase = await this.caseRepo.findOne({
       where: { id: caseId },
-      relations: { scaleVersion: true },
+      relations: { scaleVersion: true, currentGradeVersion: true },
     });
     if (!assessmentCase) throw new NotFoundException('评估案件不存在');
 
@@ -44,6 +44,10 @@ export class NotificationsService {
     record.notifiableStatus = isConfirmed
       ? NotifiableStatus.CONFIRMED
       : NotifiableStatus.UNCONFIRMED;
+    if (isConfirmed && assessmentCase.currentGradeVersion) {
+      record.gradeVersion = assessmentCase.currentGradeVersion;
+      record.gradeVersionId = assessmentCase.currentGradeVersion.id;
+    }
 
     if (isConfirmed) {
       record.message =
@@ -66,6 +70,7 @@ export class NotificationsService {
       if (isConfirmed) {
         record.status = NotificationStatus.DELIVERED;
         record.failureReason = null;
+        record.deliveredAt = record.lastAttemptAt;
       } else {
         // 通道虽可达，但等级尚未确认：本次告知业务上记为失败，原因独立标注
         record.status = NotificationStatus.FAILED;

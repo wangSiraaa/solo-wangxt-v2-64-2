@@ -1,0 +1,364 @@
+openapi: 3.1.0
+info:
+  title: Elder Care Assessment Appeal Flow API
+  version: 1.1.0
+  description: >
+    养老评估、复核、家属告知、费用生效与家属申诉闭环 API。
+    本接口使用虚构行政流程量表，不构成医疗诊断或护理分级依据。
+servers:
+  - url: http://127.0.0.1:3000/api
+components:
+  parameters:
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AppealId:
+      name: appealId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+    Material:
+      type: object
+      required: [fileName, fileRef]
+      properties:
+        fileName: { type: string, maxLength: 255 }
+        fileRef: { type: string, maxLength: 255 }
+        note: { type: string, nullable: true }
+    Appeal:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [SUBMITTED, PENDING_CORRECTION, PENDING_RULING, UPHELD, CHANGED, WITHDRAWN, EXPIRED]
+        familyRequester: { type: string }
+        reason: { type: string }
+        deadlineDate: { type: string, format: date }
+        correctionDueDate: { type: string, format: date, nullable: true }
+        rulingOutcome: { type: string, enum: [UPHELD, CHANGED], nullable: true }
+        ruledGrade: { type: string, enum: [LIGHT, MODERATE, SEVERE], nullable: true }
+        rulingComment: { type: string, nullable: true }
+        reviewerId: { type: string, nullable: true }
+        effectiveDate: { type: string, format: date, nullable: true }
+        feeBeforeAmount: { type: string, nullable: true }
+        feeAfterAmount: { type: string, nullable: true }
+        feeDeltaAmount: { type: string, nullable: true }
+        boundGradeVersionId: { type: string, format: uuid }
+        resultGradeVersionId: { type: string, format: uuid, nullable: true }
+        gradeSnapshot: { type: object, additionalProperties: true }
+        answersSnapshot: { type: object, additionalProperties: true }
+        deliverySnapshot: { type: object, additionalProperties: true }
+        materials:
+          type: array
+          items: { $ref: '#/components/schemas/Material' }
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              eventType:
+                type: string
+                enum: [SUBMITTED, CORRECTION_REQUESTED, SUPPLEMENTED, RULED_UPHELD, RULED_CHANGED, WITHDRAWN, EXPIRED]
+              fromStatus: { type: string, nullable: true }
+              toStatus: { type: string, nullable: true }
+              actorId: { type: string }
+              payload: { type: object, additionalProperties: true }
+              createdAt: { type: string, format: date-time }
+    CreateAppealRequest:
+      type: object
+      required: [notificationId, familyRequester, reason, materials]
+      properties:
+        notificationId: { type: string, format: uuid }
+        familyRequester: { type: string, minLength: 2, maxLength: 100 }
+        reason: { type: string, minLength: 5, maxLength: 2000 }
+        materials:
+          type: array
+          minItems: 0
+          maxItems: 20
+          items: { $ref: '#/components/schemas/Material' }
+        submittedDate: { type: string, format: date }
+        idempotencyKey: { type: string, maxLength: 128 }
+    CorrectionRequest:
+      type: object
+      required: [reviewerId, requestComment]
+      properties:
+        reviewerId: { type: string }
+        requestComment: { type: string }
+        dueDate: { type: string, format: date }
+        idempotencyKey: { type: string }
+    SupplementRequest:
+      type: object
+      required: [familyRequester, comment, materials]
+      properties:
+        familyRequester: { type: string }
+        comment: { type: string }
+        materials:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { $ref: '#/components/schemas/Material' }
+        submittedDate: { type: string, format: date }
+        idempotencyKey: { type: string }
+    WithdrawRequest:
+      type: object
+      required: [familyRequester, reason]
+      properties:
+        familyRequester: { type: string }
+        reason: { type: string }
+        submittedDate: { type: string, format: date }
+        idempotencyKey: { type: string }
+    RulingRequest:
+      type: object
+      required: [confirmedGrade, reviewerId, comment]
+      properties:
+        confirmedGrade: { type: string, enum: [LIGHT, MODERATE, SEVERE] }
+        reviewerId: { type: string }
+        comment: { type: string }
+        effectiveDate:
+          type: string
+          format: date
+          description: confirmedGrade 不同于申诉绑定等级时必填。
+        feeImpactTo: { type: string, format: date }
+        idempotencyKey: { type: string }
+    ExpireRequest:
+      type: object
+      required: [actorId]
+      properties:
+        actorId: { type: string }
+        reason: { type: string }
+        asOfDate: { type: string, format: date }
+        idempotencyKey: { type: string }
+  responses:
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: 状态机冲突、重复进行中申诉或并发裁决失败
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unprocessable:
+      description: 告知未送达、超过申诉期限或缺少不可变证据
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+paths:
+  /assessments:
+    post:
+      summary: 提交两位评估员量表答案
+      responses:
+        '201': { description: Created }
+  /assessments/{caseId}:
+    get:
+      summary: 查询案件、原始答案、复核、等级版本和告知链
+      parameters: [{ $ref: '#/components/parameters/CaseId' }]
+      responses:
+        '200': { description: OK }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /assessments/{caseId}/review/confirm:
+    post:
+      summary: 管理员在候选等级内显式确认
+      parameters: [{ $ref: '#/components/parameters/CaseId' }]
+      responses:
+        '201': { description: Confirmed }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /assessments/{caseId}/notification/attempt:
+    post:
+      summary: 发起家属告知送达尝试
+      parameters: [{ $ref: '#/components/parameters/CaseId' }]
+      responses:
+        '201': { description: Attempt recorded }
+  /assessments/{caseId}/notification:
+    get:
+      summary: 查询全部送达尝试和告知链
+      parameters: [{ $ref: '#/components/parameters/CaseId' }]
+      responses:
+        '200': { description: OK }
+  /fees/activate:
+    post:
+      summary: 将当前等级版本在指定日期应用到费用等级期间
+      responses:
+        '201': { description: Activated or replayed }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /fees/segments:
+    get:
+      summary: 按天分段查询费用
+      parameters:
+        - name: elderId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200': { description: OK }
+  /assessments/{caseId}/appeals:
+    post:
+      summary: 家属基于一条已送达告知在期限内提交申诉
+      description: >
+        申诉创建时冻结确认等级版本、量表答案和送达快照。同一告知仅允许一个
+        SUBMITTED/PENDING_CORRECTION/PENDING_RULING 申诉。送达失败、待送达或超期返回 422。
+      parameters: [{ $ref: '#/components/parameters/CaseId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAppealRequest' }
+      responses:
+        '201':
+          description: 申诉已创建或幂等回放
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replayed: { type: boolean }
+                  appeal: { $ref: '#/components/schemas/Appeal' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+    get:
+      summary: 查询案件全部申诉、材料和事件历史
+      parameters: [{ $ref: '#/components/parameters/CaseId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Appeal' }
+  /assessments/{caseId}/appeals/{appealId}:
+    get:
+      summary: 查询单条申诉和完整证据链
+      parameters:
+        - { $ref: '#/components/parameters/CaseId' }
+        - { $ref: '#/components/parameters/AppealId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Appeal' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /assessments/{caseId}/appeals/{appealId}/corrections:
+    post:
+      summary: 请求补正，SUBMITTED -> PENDING_CORRECTION
+      parameters:
+        - { $ref: '#/components/parameters/CaseId' }
+        - { $ref: '#/components/parameters/AppealId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CorrectionRequest' }
+      responses:
+        '201': { description: Correction requested or replayed }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /assessments/{caseId}/appeals/{appealId}/supplements:
+    post:
+      summary: 家属补正材料，PENDING_CORRECTION -> PENDING_RULING；逾期则 EXPIRED
+      parameters:
+        - { $ref: '#/components/parameters/CaseId' }
+        - { $ref: '#/components/parameters/AppealId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupplementRequest' }
+      responses:
+        '201': { description: Supplement accepted }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /assessments/{caseId}/appeals/{appealId}/withdraw:
+    post:
+      summary: 家属撤回进行中的申诉
+      parameters:
+        - { $ref: '#/components/parameters/CaseId' }
+        - { $ref: '#/components/parameters/AppealId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WithdrawRequest' }
+      responses:
+        '201': { description: Withdrawn or replayed }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /assessments/{caseId}/appeals/{appealId}/expire:
+    post:
+      summary: 管理端将超过补正期限或受理期限的进行中申诉标记过期
+      parameters:
+        - { $ref: '#/components/parameters/CaseId' }
+        - { $ref: '#/components/parameters/AppealId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExpireRequest' }
+      responses:
+        '201': { description: Expired or replayed }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /assessments/{caseId}/appeals/{appealId}/ruling:
+    post:
+      summary: 裁决申诉；维持或变更等级
+      description: >
+        SUBMITTED/PENDING_RULING 可裁决。维持不改写原复核意见，不产生新等级版本。
+        变更追加 grade_versions 新版本，按 effectiveDate 原子切割等级期间，并计算
+        effectiveDate..feeImpactTo 的前后费用差异。并发相同申诉裁决仅一个事务成功。
+      parameters:
+        - { $ref: '#/components/parameters/CaseId' }
+        - { $ref: '#/components/parameters/AppealId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RulingRequest' }
+      responses:
+        '201':
+          description: Ruling accepted or identical request replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replayed: { type: boolean }
+                  appeal: { $ref: '#/components/schemas/Appeal' }
+                  period:
+                    type: object
+                    nullable: true
+                    additionalProperties: true
+                  feeImpact:
+                    type: object
+                    nullable: true
+                    additionalProperties: true
+        '409': { $ref: '#/components/responses/Conflict' }
+  /assessments/{caseId}/appeals/{appealId}/fee-impact:
+    get:
+      summary: 查询变更裁决导致的前后费用差异
+      parameters:
+        - { $ref: '#/components/parameters/CaseId' }
+        - { $ref: '#/components/parameters/AppealId' }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200': { description: OK }
+        '409': { $ref: '#/components/responses/Conflict' }

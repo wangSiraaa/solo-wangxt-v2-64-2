@@ -18,6 +18,10 @@ NestJS + PostgreSQL + TypeORM + decimal.js 的服务端流程。**无前端**。
 7. **同一天不能出现重叠生效等级**：服务层显式校验 + PostgreSQL `btree_gist` 的 daterange 排他约束双保险。月中换级时旧期间自动截至生效日前一日（半开区间首尾相接）。
 8. **费用按天分段**：等级期间 × 日费版本切换日二次切分，闭区间逐天连续（含无生效等级空洞段），天数守恒校验；金额一律 decimal.js 计算，两位小数 `ROUND_HALF_UP`。
 9. **接口可解释**：评估响应内嵌两位评估员逐项明细（原始选项、分值、是否计入分母、NA 说明、原始分/有效分母/百分比/定级阈值）；费用分段逐段给出等级、日费版本、天数、金额与来源。
+10. **家属申诉形成闭环**：只能对已送达且在规定期限内的确认告知提出申诉；提交时冻结当前确认等级版本、量表答案与送达快照。相同告知只允许一个进行中的申诉。
+11. **申诉状态机与证据留痕**：`SUBMITTED / PENDING_CORRECTION / PENDING_RULING / UPHELD / CHANGED / WITHDRAWN / EXPIRED` 全部迁移写追加式事件表；原始复核意见永不被改写。
+12. **裁决变更只追加等级版本**：维持不产生新版本；变更追加 `grade_versions`，按裁决明确的 `effectiveDate` 原子切割等级期间，并持久化/查询变更前后费用差异。
+13. **并发与乱序安全**：申诉、补正、撤回、裁决均支持幂等键或相同请求回放；撤回后的迟到裁决不生效；并发裁决通过申诉行锁、状态条件和等级期间排他约束保证只有一个有效结果。
 
 ## 演示数据
 
@@ -49,6 +53,17 @@ npm test              # e2e（自带嵌入式 PG，覆盖下列全部场景）
 | GET | `/assessments/:id/notification` | 全部告知记录（失败历史、未确认尝试均保留） |
 | POST | `/fees/activate` | 等级生效 `{caseId, effectiveDate}` |
 | GET | `/fees/segments?elderId=&from=&to=` | 按天分段费用与 decimal 合计 |
+| POST | `/assessments/:caseId/appeals` | 基于已送达且未超期的告知提交申诉（冻结等级/答案/送达快照，支持幂等键） |
+| GET | `/assessments/:caseId/appeals` | 查询案件申诉历史、材料与事件链 |
+| GET | `/assessments/:caseId/appeals/:appealId` | 查询单条申诉完整证据 |
+| POST | `/assessments/:caseId/appeals/:appealId/corrections` | 要求补正：`SUBMITTED -> PENDING_CORRECTION` |
+| POST | `/assessments/:caseId/appeals/:appealId/supplements` | 提交补正材料：`PENDING_CORRECTION -> PENDING_RULING`；逾期转 `EXPIRED` |
+| POST | `/assessments/:caseId/appeals/:appealId/withdraw` | 家属撤回进行中申诉 |
+| POST | `/assessments/:caseId/appeals/:appealId/expire` | 管理端标记超期申诉 |
+| POST | `/assessments/:caseId/appeals/:appealId/ruling` | 裁决维持/变更；变更需 `effectiveDate`，返回费用影响 |
+| GET | `/assessments/:caseId/appeals/:appealId/fee-impact` | 查询变更等级的前后费用与差额 |
+
+完整契约见 [`openapi.yaml`](./openapi.yaml)。
 
 ### 示例：月中升级 + 闰月
 
@@ -73,4 +88,10 @@ curl -s 'localhost:3000/api/fees/segments?elderId=E1&from=2024-02-01&to=2024-02-
 - 重复确认请求：相同幂等键回放、无键重复 409；
 - 尚未确认尝试告知 → `UNCONFIRMED/FAILED`；送达失败原因分行留痕；
 - 月中升级切旧区间、同案重复生效回放、同日不同等级重叠 409；
-- 闰月 2024-02（29 天）分段金额、跨 2024-01-01 调价日同等级二次分段、无等级空洞段、非法闰日期拒绝。
+- 闰月 2024-02（29 天）分段金额、跨 2024-01-01 调价日同等级二次分段、无等级空洞段、非法闰日期拒绝；
+- 期限内申诉经补正后维持：原复核意见不变、等级/答案/送达快照与全部事件可复核；
+- 补正后变更等级：追加等级版本、按明确生效日切期间、生成变更前后费用差异；
+- 送达失败或超过期限拒绝受理且不创建申诉、不污染评估；
+- 撤回后迟到补正/裁决不生效，重复撤回和裁决请求幂等；
+- 两个管理员并发裁决仅一个成功，数据库中不产生同日两条有效等级；
+- 应用重启后申诉证据、裁决决定、等级期间、迁移记录和既有告知链仍可查询。

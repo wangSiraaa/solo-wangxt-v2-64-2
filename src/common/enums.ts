@@ -40,3 +40,42 @@ export enum NaPolicy {
   /** NA 按 0 分计入分母（本演示量表不使用，仅展示枚举完整性） */
   COUNT_AS_ZERO = 'COUNT_AS_ZERO',
 }
+
+/** 等级版本来源：首次复核/一致确认，或申诉裁决变更 */
+export enum GradeVersionSource {
+  REVIEW = 'REVIEW',
+  APPEAL = 'APPEAL',
+}
+
+/** 申诉状态机 */
+export enum AppealStatus {
+  /** 家属已提交，等待裁决机构受理/裁决 */
+  SUBMITTED = 'SUBMITTED',
+  /** 申诉材料需补正；补正期限内未补正则过期 */
+  PENDING_CORRECTION = 'PENDING_CORRECTION',
+  /** 材料已补正，等待裁决 */
+  PENDING_RULING = 'PENDING_RULING',
+  /** 裁决维持原等级 */
+  UPHELD = 'UPHELD',
+  /** 裁决变更等级 */
+  CHANGED = 'CHANGED',
+  /** 家属撤回 */
+  WITHDRAWN = 'WITHDRAWN',
+  /** 超过补正期限等，申诉失效 */
+  EXPIRED = 'EXPIRED',
+}
+
+export enum AppealRulingOutcome {
+  UPHELD = 'UPHELD',
+  CHANGED = 'CHANGED',
+}
+
+export enum AppealEventType {
+  SUBMITTED = 'SUBMITTED',
+  CORRECTION_REQUESTED = 'CORRECTION_REQUESTED',
+  SUPPLEMENTED = 'SUPPLEMENTED',
+  RULED_UPHELD = 'RULED_UPHELD',
+  RULED_CHANGED = 'RULED_CHANGED',
+  WITHDRAWN = 'WITHDRAWN',
+  EXPIRED = 'EXPIRED',
+}
