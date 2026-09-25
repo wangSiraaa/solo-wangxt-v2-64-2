@@ -18,6 +18,16 @@ NestJS + PostgreSQL + TypeORM + decimal.js 的服务端流程。**无前端**。
 7. **同一天不能出现重叠生效等级**：服务层显式校验 + PostgreSQL `btree_gist` 的 daterange 排他约束双保险。月中换级时旧期间自动截至生效日前一日（半开区间首尾相接）。
 8. **费用按天分段**：等级期间 × 日费版本切换日二次切分，闭区间逐天连续（含无生效等级空洞段），天数守恒校验；金额一律 decimal.js 计算，两位小数 `ROUND_HALF_UP`。
 9. **接口可解释**：评估响应内嵌两位评估员逐项明细（原始选项、分值、是否计入分母、NA 说明、原始分/有效分母/百分比/定级阈值）；费用分段逐段给出等级、日费版本、天数、金额与来源。
+10. **申诉闭环（家属异议 → 补正 → 裁决）**：
+    - 受理前提：告知记录**已送达**且申诉日在受理期限内（送达日 + `APPEAL_WINDOW_DAYS`，默认 30 天）；送达失败/未送达/超期一律 409 拒绝受理，且**不产生任何数据、不污染评估**；
+    - 受理即固化快照：**当时的确认等级、两位评估员量表答案、送达记录、复核意见**，后续任何变更不得改写；
+    - 状态机：`SUBMITTED`（材料齐全）/ `PENDING_CORRECTION`（待补正）→ 补正 → `PENDING_ADJUDICATION`（待裁决）→ 裁决 → `UPHELD`（维持）/ `CHANGED`（变更）；进行中可 `WITHDRAWN`（撤回）；待补正超期未补齐 → `EXPIRED`（过期，惰性判定）；
+    - **同一告知只能有一个进行中的申诉**：部分唯一索引 `appeals_one_open_per_notification` 原子保证；
+    - 补正/撤回/裁决均支持幂等键：同键回放、异键冲突 409、终态后乱序请求 409；撤回后迟到的裁决不得生效；
+    - **裁决不改写原复核意见**（`review_decisions` 保持原样），决定独立存 `appeal_decisions`（一申诉一裁决，唯一约束）；
+    - 变更裁决**追加新等级版本**（`grade_periods` 新行、旧期间截断、`source_appeal_id` 可追溯），并在**同一事务内按明确生效日**计算前后费用差异快照（开放旧期间取 30 天演示比较窗口，可用 `APPEAL_IMPACT_HORIZON_DAYS` 调整）；
+    - 并发裁决：申诉行 `FOR UPDATE` 串行化 + 一申诉一裁决唯一约束 + 等级期间 gist 排他约束，**仅一个成功，绝不产生两条有效等级**；
+    - 裁决结果自动生成新的家属告知记录（告知链追加，既有告知不改动）。
 
 ## 演示数据
 
@@ -49,6 +59,28 @@ npm test              # e2e（自带嵌入式 PG，覆盖下列全部场景）
 | GET | `/assessments/:id/notification` | 全部告知记录（失败历史、未确认尝试均保留） |
 | POST | `/fees/activate` | 等级生效 `{caseId, effectiveDate}` |
 | GET | `/fees/segments?elderId=&from=&to=` | 按天分段费用与 decimal 合计 |
+| POST | `/appeals` | 申诉受理（绑定等级/答案/送达快照；未送达或超期 409；支持幂等键） |
+| POST | `/appeals/:id/supplement` | 补正材料 → 待裁决（同键回放，终态/过期拒绝） |
+| POST | `/appeals/:id/withdraw` | 撤回申诉（重复撤回幂等回放） |
+| POST | `/appeals/:id/adjudicate` | 裁决维持/变更（变更追加新等级版本并按生效日算费用差异；并发仅一个成功） |
+| GET | `/appeals/:id` | 申诉详情：快照、材料、决定与完整留痕事件 |
+| GET | `/assessments/:caseId/appeals` | 案件维度的申诉历史 |
+| GET | `/openapi.json` | OpenAPI 3.0 文档（覆盖全部接口） |
+
+### 示例：申诉 → 补正 → 变更裁决
+
+```bash
+# 1) 对已送达的告知提出异议（材料不足 → 待补正）
+curl -sXPOST localhost:3000/api/appeals -H 'Content-Type: application/json' -d '{
+  "notificationId":"<notification-uuid>","reason":"家属认为等级偏低","filedBy":"family-li"}'
+# 2) 补正材料 → 待裁决
+curl -sXPOST localhost:3000/api/appeals/<appeal-uuid>/supplement -H 'Content-Type: application/json' \
+  -d '{"materials":["医院诊断证明.pdf"],"idempotencyKey":"sup-1"}'
+# 3) 变更裁决：追加新等级版本，响应内含前后费用差异（feeImpact）
+curl -sXPOST localhost:3000/api/appeals/<appeal-uuid>/adjudicate -H 'Content-Type: application/json' -d '{
+  "decision":"CHANGED","newGrade":"SEVERE","effectiveDate":"2024-02-15",
+  "comment":"补充材料充分，复评认定为重度","adjudicatorId":"admin-li","idempotencyKey":"adj-1"}'
+```
 
 ### 示例：月中升级 + 闰月
 
@@ -73,4 +105,13 @@ curl -s 'localhost:3000/api/fees/segments?elderId=E1&from=2024-02-01&to=2024-02-
 - 重复确认请求：相同幂等键回放、无键重复 409；
 - 尚未确认尝试告知 → `UNCONFIRMED/FAILED`；送达失败原因分行留痕；
 - 月中升级切旧区间、同案重复生效回放、同日不同等级重叠 409；
-- 闰月 2024-02（29 天）分段金额、跨 2024-01-01 调价日同等级二次分段、无等级空洞段、非法闰日期拒绝。
+- 闰月 2024-02（29 天）分段金额、跨 2024-01-01 调价日同等级二次分段、无等级空洞段、非法闰日期拒绝；
+- **申诉闭环**：
+  - 期限内申诉 → 补正 → 裁决维持：原等级不变、原复核意见不改写、FILED/SUPPLEMENTED/ADJUDICATED 全程留痕；
+  - 待补正 → 补正（同键幂等回放、材料不重复）→ 变更裁决：追加新等级版本（旧期间截断、`source_appeal_id` 可追溯），按生效日给出前后费用差异（30 天窗口 3000.00 → 9000.00，差 6000.00）；
+  - 送达失败 / 未送达 / 超期 / 申诉日倒挂：拒绝受理且不产生数据、不污染评估与告知链；
+  - 撤回（重复撤回幂等）后迟到裁决 409 不生效、无等级期间；撤回后同一告知可再次申诉；
+  - 同一告知已有进行中申诉 → 409（唯一索引兜底）；
+  - 两管理员并发裁决同一申诉：恰一个 201 一个 409，仅一条裁决、一条等级期间；
+  - 待补正超期 → 惰性 EXPIRED，补正/裁决/撤回均 409；
+  - 服务重启后：申诉快照（等级/答案/送达）、裁决决定、等级期间与既有告知链完整可复核。

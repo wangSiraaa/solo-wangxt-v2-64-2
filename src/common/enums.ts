@@ -33,6 +33,40 @@ export enum NotifiableStatus {
   UNCONFIRMED = 'UNCONFIRMED',
 }
 
+/**
+ * 家属申诉状态机：
+ *  SUBMITTED（已提交，材料齐全）/ PENDING_CORRECTION（待补正）
+ *    --补正--> PENDING_ADJUDICATION（待裁决）
+ *  SUBMITTED / PENDING_ADJUDICATION --裁决--> UPHELD（维持）/ CHANGED（变更）
+ *  任意进行中状态 --撤回--> WITHDRAWN
+ *  PENDING_CORRECTION 超过补正期限仍未补齐 --> EXPIRED（过期，惰性判定）
+ * UPHELD / CHANGED / WITHDRAWN / EXPIRED 为终态，不再接受任何写操作。
+ */
+export enum AppealStatus {
+  SUBMITTED = 'SUBMITTED',
+  PENDING_CORRECTION = 'PENDING_CORRECTION',
+  PENDING_ADJUDICATION = 'PENDING_ADJUDICATION',
+  UPHELD = 'UPHELD',
+  CHANGED = 'CHANGED',
+  WITHDRAWN = 'WITHDRAWN',
+  EXPIRED = 'EXPIRED',
+}
+
+/** 申诉裁决结论（裁决不改写原复核意见，仅追加申诉决定与新等级版本） */
+export enum AppealDecisionValue {
+  UPHELD = 'UPHELD',
+  CHANGED = 'CHANGED',
+}
+
+/** 申诉留痕事件类型（完整审计链） */
+export enum AppealEventAction {
+  FILED = 'FILED',
+  SUPPLEMENTED = 'SUPPLEMENTED',
+  ADJUDICATED = 'ADJUDICATED',
+  WITHDRAWN = 'WITHDRAWN',
+  EXPIRED = 'EXPIRED',
+}
+
 /** 量表不适用项（NA）如何影响分母：由量表版本自行定义 */
 export enum NaPolicy {
   /** NA 项从分母中剔除 */

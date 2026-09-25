@@ -8,6 +8,9 @@ import { ReviewDecision } from '../entities/review-decision.entity';
 import { NotificationRecord } from '../entities/notification.entity';
 import { GradeEffectivePeriod } from '../entities/grade-period.entity';
 import { FeeRateVersion } from '../entities/fee-rate-version.entity';
+import { Appeal } from '../entities/appeal.entity';
+import { AppealEvent } from '../entities/appeal-event.entity';
+import { AppealDecision } from '../entities/appeal-decision.entity';
 import { seedDemoData } from './seed';
 
 export const entities = [
@@ -20,6 +23,9 @@ export const entities = [
   NotificationRecord,
   GradeEffectivePeriod,
   FeeRateVersion,
+  Appeal,
+  AppealEvent,
+  AppealDecision,
 ];
 
 export function buildDataSourceOptions(): DataSourceOptions {
@@ -36,17 +42,24 @@ export function buildDataSourceOptions(): DataSourceOptions {
 }
 
 /**
- * 幂等建表 + 防重叠排除约束（首次启动建表；后续启动只补缺）。
+ * 幂等建表 + 防重叠排除约束 + 申诉闭环原子约束（首次启动建表；后续启动只补缺）。
  * 同一老人同一天不得出现重叠生效等级：
  *   btree_gist 提供 daterange 排他约束（半开区间，相邻期间首尾相接不算重叠）。
+ * 申诉闭环：
+ *   appeals_one_open_per_notification —— 同一告知最多一条进行中申诉；
+ *   appeal_events_appeal_idempotency_key —— 同一申诉内补正/撤回/裁决幂等键唯一。
  */
 export async function ensureSchema(dataSource: DataSource): Promise<void> {
   await dataSource.query('CREATE EXTENSION IF NOT EXISTS btree_gist');
 
-  const exists = await dataSource.query(
-    `SELECT to_regclass('grade_periods') IS NOT NULL AS ok`,
+  // 持久化迁移：任一核心表缺失（含升级库缺申诉表）即同步缺失表/列
+  const missing = await dataSource.query(
+    `SELECT (to_regclass('grade_periods') IS NULL
+          OR to_regclass('appeals') IS NULL
+          OR to_regclass('appeal_events') IS NULL
+          OR to_regclass('appeal_decisions') IS NULL) AS missing`,
   );
-  if (!exists[0].ok) {
+  if (missing[0].missing) {
     await dataSource.synchronize();
   }
 
@@ -63,6 +76,18 @@ export async function ensureSchema(dataSource: DataSource): Promise<void> {
         )
     `);
   }
+
+  // 原子约束（部分唯一索引）：显式创建，对既有库同样生效
+  await dataSource.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS appeals_one_open_per_notification
+      ON appeals (notification_id)
+      WHERE status IN ('SUBMITTED', 'PENDING_CORRECTION', 'PENDING_ADJUDICATION')
+  `);
+  await dataSource.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS appeal_events_appeal_idempotency_key
+      ON appeal_events (appeal_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL
+  `);
 }
 
 let singleton: Promise<DataSource> | null = null;

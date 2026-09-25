@@ -37,6 +37,10 @@ export class GradeEffectivePeriod {
   @Column({ name: 'source_case_id', type: 'uuid' })
   sourceCaseId: string;
 
+  /** 来源申诉（申诉裁决变更追加的等级版本；普通生效为 null） */
+  @Column({ name: 'source_appeal_id', type: 'uuid', nullable: true })
+  sourceAppealId: string | null;
+
   @Column({ name: 'created_at', type: 'timestamptz', default: () => 'now()' })
   createdAt: Date;
 }

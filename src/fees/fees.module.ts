@@ -5,6 +5,7 @@ import { GradeEffectivePeriod } from '../entities/grade-period.entity';
 import { FeeRateVersion } from '../entities/fee-rate-version.entity';
 import { FeesController } from './fees.controller';
 import { FeesService } from './fees.service';
+import { GradePeriodsService } from './grade-periods.service';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { FeesService } from './fees.service';
     ]),
   ],
   controllers: [FeesController],
-  providers: [FeesService],
+  providers: [FeesService, GradePeriodsService],
+  exports: [FeesService, GradePeriodsService],
 })
 export class FeesModule {}
